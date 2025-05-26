@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 import os 
 from io import StringIO
 from psycopg2.sql import SQL, Identifier
+import multiprocessing
 
 load_dotenv()
 
@@ -60,7 +61,7 @@ def loadratings(ratings_table_name, ratings_file_path, open_connection):
         cur.execute(SQL("CREATE TABLE IF NOT EXISTS {} (userid INTEGER, movieid INTEGER, rating FLOAT)").format(Identifier(ratings_table_name))) 
         conn.commit()
 
-        batch_size=200_000
+        batch_size=150_000
         buffer = StringIO()
         with open(ratings_file_path, 'r') as file:
             for i, line in enumerate(file, 1):
@@ -90,3 +91,56 @@ def loadratings(ratings_table_name, ratings_file_path, open_connection):
         raise 
     finally:
         if cur: cur.close()
+
+def insert_partition(args):
+    i, delta, ratings_table_name = args
+    conn = getopenconnection(dbname=os.getenv("DATABASE_NAME"))
+    cur = conn.cursor()
+
+    minRange = i * delta
+    maxRange = minRange + delta
+    table_name = f"range_part{i}"
+    if i == 0:
+        query = f"INSERT INTO {table_name} SELECT userid, movieid, rating FROM {ratings_table_name} WHERE rating >= {minRange} AND rating <= {maxRange};"
+    else:
+        query = f"INSERT INTO {table_name} SELECT userid, movieid, rating FROM {ratings_table_name} WHERE rating > {minRange} AND rating <= {maxRange};"
+
+    cur.execute(query)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# 8.33s
+def rangepartition(ratings_table_name, number_of_partitions, open_connection):
+    cur = open_connection.cursor()
+    delta = 5 / number_of_partitions
+    for i in range(number_of_partitions):
+        table_name = f"range_part{i}"
+        cur.execute(f"CREATE TABLE {table_name} (userid INTEGER, movieid INTEGER, rating FLOAT);")
+    open_connection.commit()
+    cur.close()
+
+    args = [(i, delta, ratings_table_name) for i in range(number_of_partitions)]
+    with multiprocessing.Pool() as pool:
+        pool.map(insert_partition, args)
+
+# 14s
+# def rangepartition(ratingstablename, numberofpartitions, openconnection):
+#     """
+#     Function to create partitions of main table based on range of ratings.
+#     """
+#     con = openconnection
+#     cur = con.cursor()
+#     delta = 5 / numberofpartitions
+#     RANGE_TABLE_PREFIX = 'range_part'
+#     for i in range(0, numberofpartitions):
+#         minRange = i * delta
+#         maxRange = minRange + delta
+#         table_name = RANGE_TABLE_PREFIX + str(i)
+#         cur.execute("create table " + table_name + " (userid integer, movieid integer, rating float);")
+#         if i == 0:
+#             cur.execute("insert into " + table_name + " (userid, movieid, rating) select userid, movieid, rating from " + ratingstablename + " where rating >= " + str(minRange) + " and rating <= " + str(maxRange) + ";")
+#         else:
+#             cur.execute("insert into " + table_name + " (userid, movieid, rating) select userid, movieid, rating from " + ratingstablename + " where rating > " + str(minRange) + " and rating <= " + str(maxRange) + ";")
+#     cur.close()
+#     con.commit()
