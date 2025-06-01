@@ -162,7 +162,7 @@ def roundrobinpartition(ratingstablename, numberofpartitions, openconnection):
     # tạo bảng temp để tránh tạo bảng lặp đi lặp lại trong for loop 
     temp_tb = SQL("""
         CREATE TEMPORARY TABLE temp AS 
-        SELECT userid, movieid, rating, ROW_NUMBER() OVER () AS rnum
+        SELECT userid, movieid, rating, ROW_NUMBER() OVER (ORDER BY userid) AS rnum
         FROM {};
     """).format(
         Identifier(ratingstablename)
@@ -180,7 +180,7 @@ def roundrobinpartition(ratingstablename, numberofpartitions, openconnection):
             cur.execute(SQL("""
                     CREATE TABLE {} (userid integer, movieid integer, rating float);
                 """).format(Identifier(table_name)))
-            cur.execute("insert into " + table_name + " (userid, movieid, rating) select userid, movieid, rating from temp where mod(temp.rnum-1, " + str(numberofpartitions) + ") = " + str(i) + ";")
+            cur.execute("insert into " + table_name + " (userid, movieid, rating) select userid, movieid, rating from temp where mod(temp.rnum - 1, " + str(numberofpartitions) + ") = " + str(i) + ";")
             
         
         con.commit() 
@@ -202,3 +202,40 @@ def count_partitions(prefix, openconnection):
     cur.close()
 
     return count
+
+def rangeinsert(ratingstablename, userid, itemid, rating, openconnection):
+    """
+    Function to insert a new row into the main table and specific partition based on range rating.
+    Bổ sung insert into ratingstablename 
+    """
+    con = openconnection
+    cur = con.cursor()
+    RANGE_TABLE_PREFIX = 'range_part'
+    numberofpartitions = count_partitions(RANGE_TABLE_PREFIX, openconnection)
+    delta = 5 / numberofpartitions
+    index = int(rating / delta)
+    if rating % delta == 0 and index != 0:
+        index = index - 1
+    table_name = RANGE_TABLE_PREFIX + str(index)
+    cur.execute("insert into " + ratingstablename + "(userid, movieid, rating) values (" + str(userid) + "," + str(itemid) + "," + str(rating) + ");")
+    cur.execute("insert into " + table_name + "(userid, movieid, rating) values (" + str(userid) + "," + str(itemid) + "," + str(rating) + ");")
+    cur.close()
+    con.commit()
+
+def roundrobininsert(ratingstablename, userid, itemid, rating, openconnection):
+    """
+    Function to insert a new row into the main table and specific partition based on round robin
+    approach.
+    """
+    con = openconnection
+    cur = con.cursor()
+    RROBIN_TABLE_PREFIX = 'rrobin_part'
+    cur.execute("insert into " + ratingstablename + "(userid, movieid, rating) values (" + str(userid) + "," + str(itemid) + "," + str(rating) + ");")
+    cur.execute("select count(*) from " + ratingstablename + ";")
+    total_rows = (cur.fetchall())[0][0]
+    numberofpartitions = count_partitions(RROBIN_TABLE_PREFIX, openconnection)
+    index = (total_rows-1) % numberofpartitions
+    table_name = RROBIN_TABLE_PREFIX + str(index)
+    cur.execute("insert into " + table_name + "(userid, movieid, rating) values (" + str(userid) + "," + str(itemid) + "," + str(rating) + ");")
+    cur.close()
+    con.commit()
