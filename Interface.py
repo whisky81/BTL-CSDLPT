@@ -8,6 +8,9 @@ import multiprocessing
 load_dotenv()
 
 def getopenconnection(user='postgres', password='2324', dbname='postgres'):
+    '''
+    Connect to database 'dbname' through unix socket
+    '''
     return psycopg2.connect(
         dbname=dbname,
         user=user, 
@@ -93,6 +96,9 @@ def loadratings(ratings_table_name, ratings_file_path, open_connection):
         if cur: cur.close()
 
 def insert_partition(args):
+    '''
+    Helper func for rangepartition 
+    '''
     i, delta, ratings_table_name = args
     conn = getopenconnection(dbname=os.getenv("DATABASE_NAME"))
     cur = conn.cursor()
@@ -144,3 +150,44 @@ def rangepartition(ratings_table_name, number_of_partitions, open_connection):
 #             cur.execute("insert into " + table_name + " (userid, movieid, rating) select userid, movieid, rating from " + ratingstablename + " where rating > " + str(minRange) + " and rating <= " + str(maxRange) + ";")
 #     cur.close()
 #     con.commit()
+
+def roundrobinpartition(ratingstablename, numberofpartitions, openconnection):
+    """
+    Function to create partitions of main table using round robin approach.
+    Thay thế  mod(temp.rnum-1, 5) -> mod(temp.rnum - 1, numberofpartitions) để  khỏi mất mát dữ liệu trong quá trình phân mảnh khi numberofpartition khác 5 
+    """
+    con = None 
+    cur = None
+    
+    # tạo bảng temp để tránh tạo bảng lặp đi lặp lại trong for loop 
+    temp_tb = SQL("""
+        CREATE TEMPORARY TABLE temp AS 
+        SELECT userid, movieid, rating, ROW_NUMBER() OVER () AS rnum
+        FROM {};
+    """).format(
+        Identifier(ratingstablename)
+    )
+    try: 
+        con = openconnection
+        cur = con.cursor()
+        RROBIN_TABLE_PREFIX = 'rrobin_part'
+        
+        cur.execute(temp_tb)
+        
+        for i in range(0, numberofpartitions):
+            table_name = RROBIN_TABLE_PREFIX + str(i)
+            # cur.execute("create table " + table_name + " (userid integer, movieid integer, rating float);")
+            cur.execute(SQL("""
+                    CREATE TABLE {} (userid integer, movieid integer, rating float);
+                """).format(Identifier(table_name)))
+            cur.execute("insert into " + table_name + " (userid, movieid, rating) select userid, movieid, rating from temp where mod(temp.rnum-1, " + str(numberofpartitions) + ") = " + str(i) + ";")
+            
+        
+        con.commit() 
+    except Exception as e:
+        print(e) 
+        raise 
+    finally:
+        if con and cur: 
+            cur.close()
+        

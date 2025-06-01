@@ -1,10 +1,21 @@
-from Interface import rangepartition, getopenconnection
-import time 
+from Interface import getopenconnection, roundrobinpartition 
+import os 
+from dotenv import load_dotenv
 
-a = time.time()
-conn = getopenconnection(dbname='dds_assgn1')
-rangepartition('ratings', 10, conn)
-conn.close()  
-b = time.time() 
+load_dotenv()
 
-print(f"Time: {b - a:.2f}s") 
+if __name__ == "__main__":
+    conn = None 
+    try:
+        conn = getopenconnection(dbname=os.getenv("DATABASE_NAME"))
+        roundrobinpartition(
+            'ratings',
+            10,
+            conn 
+        )
+    except Exception as e:
+        print(e)
+        raise 
+    finally:
+        conn.close()
+        
