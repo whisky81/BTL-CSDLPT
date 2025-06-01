@@ -190,4 +190,15 @@ def roundrobinpartition(ratingstablename, numberofpartitions, openconnection):
     finally:
         if con and cur: 
             cur.close()
-        
+
+def count_partitions(prefix, openconnection):
+    """
+    Function to count the number of tables which have the @prefix in their name somewhere.
+    """
+    con = openconnection
+    cur = con.cursor()
+    cur.execute("select count(*) from pg_stat_user_tables where relname like " + "'" + prefix + "%';")
+    count = cur.fetchone()[0]
+    cur.close()
+
+    return count
