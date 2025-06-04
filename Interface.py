@@ -2,7 +2,7 @@ import psycopg2
 from dotenv import load_dotenv
 import os 
 from io import StringIO
-from psycopg2.sql import SQL, Identifier
+from psycopg2.sql import SQL, Identifier, Literal
 import multiprocessing
 
 load_dotenv()
@@ -130,27 +130,6 @@ def rangepartition(ratings_table_name, number_of_partitions, open_connection):
     with multiprocessing.Pool() as pool:
         pool.map(insert_partition, args)
 
-# 14s
-# def rangepartition(ratingstablename, numberofpartitions, openconnection):
-#     """
-#     Function to create partitions of main table based on range of ratings.
-#     """
-#     con = openconnection
-#     cur = con.cursor()
-#     delta = 5 / numberofpartitions
-#     RANGE_TABLE_PREFIX = 'range_part'
-#     for i in range(0, numberofpartitions):
-#         minRange = i * delta
-#         maxRange = minRange + delta
-#         table_name = RANGE_TABLE_PREFIX + str(i)
-#         cur.execute("create table " + table_name + " (userid integer, movieid integer, rating float);")
-#         if i == 0:
-#             cur.execute("insert into " + table_name + " (userid, movieid, rating) select userid, movieid, rating from " + ratingstablename + " where rating >= " + str(minRange) + " and rating <= " + str(maxRange) + ";")
-#         else:
-#             cur.execute("insert into " + table_name + " (userid, movieid, rating) select userid, movieid, rating from " + ratingstablename + " where rating > " + str(minRange) + " and rating <= " + str(maxRange) + ";")
-#     cur.close()
-#     con.commit()
-
 def roundrobinpartition(ratingstablename, numberofpartitions, openconnection):
     """
     Function to create partitions of main table using round robin approach.
@@ -176,66 +155,186 @@ def roundrobinpartition(ratingstablename, numberofpartitions, openconnection):
         
         for i in range(0, numberofpartitions):
             table_name = RROBIN_TABLE_PREFIX + str(i)
-            # cur.execute("create table " + table_name + " (userid integer, movieid integer, rating float);")
-            cur.execute(SQL("""
-                    CREATE TABLE {} (userid integer, movieid integer, rating float);
-                """).format(Identifier(table_name)))
-            cur.execute("insert into " + table_name + " (userid, movieid, rating) select userid, movieid, rating from temp where mod(temp.rnum - 1, " + str(numberofpartitions) + ") = " + str(i) + ";")
             
-        
+            create_partition_table_sql = SQL("""
+                CREATE TABLE {} (userid integer, movieid integer, rating float);
+            """).format(Identifier(table_name))
+            
+            cur.execute(create_partition_table_sql)
+            
+            insert_into_partition_sql = SQL("""
+                INSERT INTO {} (userid, movieid, rating) 
+                SELECT userid, movieid, rating from temp 
+                WHERE mod(temp.rnum - 1, {}) = {}; 
+            """).format(
+                Identifier(table_name),
+                Literal(numberofpartitions),
+                Literal(i) 
+            )
+            
+            cur.execute(insert_into_partition_sql)
+            
         con.commit() 
     except Exception as e:
         print(e) 
+        if con:
+            con.rollback()
         raise 
     finally:
-        if con and cur: 
-            cur.close()
+        if cur: 
+            # Xóa bảng `temp` nếu nó tồn tại
+            try:
+                cur.execute(SQL("DROP TABLE IF EXISTS temp;"))
+            except Exception as drop_e:
+                print(drop_e) 
+                raise 
+            
+            cur.close() 
 
-def count_partitions(prefix, openconnection):
-    """
-    Function to count the number of tables which have the @prefix in their name somewhere.
-    """
-    con = openconnection
-    cur = con.cursor()
-    cur.execute("select count(*) from pg_stat_user_tables where relname like " + "'" + prefix + "%';")
-    count = cur.fetchone()[0]
-    cur.close()
-
+def count_partitions(prefix, openconnection): 
+    con = None 
+    cur = None 
+    count = 0 
+    try:
+        con = openconnection
+        cur = con.cursor() 
+        
+        like_pattern = prefix + '%'
+        query = SQL("SELECT COUNT(*) FROM pg_stat_user_tables WHERE relname LIKE {};").format(Literal(like_pattern))
+        
+        cur.execute(query) 
+        result = cur.fetchone()  
+        if result:
+            count = result[0]   
+    except Exception as e:
+        print(e)
+        raise 
+    finally:
+        if cur:
+            cur.close() 
     return count
 
 def rangeinsert(ratingstablename, userid, itemid, rating, openconnection):
-    """
-    Function to insert a new row into the main table and specific partition based on range rating.
-    Bổ sung insert into ratingstablename 
-    """
-    con = openconnection
-    cur = con.cursor()
+
+    con = None
+    cur = None
     RANGE_TABLE_PREFIX = 'range_part'
-    numberofpartitions = count_partitions(RANGE_TABLE_PREFIX, openconnection)
-    delta = 5 / numberofpartitions
-    index = int(rating / delta)
-    if rating % delta == 0 and index != 0:
-        index = index - 1
-    table_name = RANGE_TABLE_PREFIX + str(index)
-    cur.execute("insert into " + ratingstablename + "(userid, movieid, rating) values (" + str(userid) + "," + str(itemid) + "," + str(rating) + ");")
-    cur.execute("insert into " + table_name + "(userid, movieid, rating) values (" + str(userid) + "," + str(itemid) + "," + str(rating) + ");")
-    cur.close()
-    con.commit()
+    MAX_RATING_SCALE = 5.0  
+    try:
+        con = openconnection
+        if con is None:
+            raise ValueError("Database connection cannot be None.")
+        
+        if con.closed:
+            raise ConnectionError("Database connection is closed.")
+
+        cur = con.cursor()
+
+        numberofpartitions = count_partitions(RANGE_TABLE_PREFIX, openconnection)
+
+        if numberofpartitions <= 0:
+            err_msg = (f"Error: No partitions found with prefix '{RANGE_TABLE_PREFIX}' "
+                       f"or invalid count ({numberofpartitions}). Cannot insert.")
+            raise ValueError(err_msg)
+
+        delta = MAX_RATING_SCALE / numberofpartitions
+        
+        if rating <= 0.0:
+            index = 0
+        elif rating >= MAX_RATING_SCALE:
+            index = numberofpartitions - 1
+        else:
+            index = int(rating / delta)
+            if rating % delta == 0.0 and index > 0:
+                index -= 1
+        
+        index = max(0, min(index, numberofpartitions - 1))
+        partition_table_name_str = RANGE_TABLE_PREFIX + str(index)
+        insert_data = (userid, itemid, rating)
+
+        main_insert_sql = SQL("INSERT INTO {} (userid, movieid, rating) VALUES (%s, %s, %s);").format(
+            Identifier(ratingstablename)
+        )
+        cur.execute(main_insert_sql, insert_data)
+
+        partition_insert_sql = SQL("INSERT INTO {} (userid, movieid, rating) VALUES (%s, %s, %s);").format(
+            Identifier(partition_table_name_str)
+        )
+        cur.execute(partition_insert_sql, insert_data)
+
+        con.commit()
+    except (ValueError, ConnectionError) as ve: # Catch specific custom errors
+        print(f"Configuration or Connection Error: {ve}")
+        # No rollback needed if transaction hasn't started or connection is bad
+        raise
+    except Exception as e:
+        print(f"An error occurred during range insert: {e}")
+        if con and not con.closed:
+            try:
+                con.rollback()
+                print("Transaction rolled back due to error.")
+            except Exception as rb_e:
+                print(f"Error during rollback: {rb_e}")
+        raise # Re-raise the original exception
+    finally:
+        if cur:
+            try:
+                cur.close()
+            except Exception as e_close:
+                print(f"Error closing cursor: {e_close}")
 
 def roundrobininsert(ratingstablename, userid, itemid, rating, openconnection):
-    """
-    Function to insert a new row into the main table and specific partition based on round robin
-    approach.
-    """
-    con = openconnection
-    cur = con.cursor()
+    con = None
+    cur = None
     RROBIN_TABLE_PREFIX = 'rrobin_part'
-    cur.execute("insert into " + ratingstablename + "(userid, movieid, rating) values (" + str(userid) + "," + str(itemid) + "," + str(rating) + ");")
-    cur.execute("select count(*) from " + ratingstablename + ";")
-    total_rows = (cur.fetchall())[0][0]
-    numberofpartitions = count_partitions(RROBIN_TABLE_PREFIX, openconnection)
-    index = (total_rows-1) % numberofpartitions
-    table_name = RROBIN_TABLE_PREFIX + str(index)
-    cur.execute("insert into " + table_name + "(userid, movieid, rating) values (" + str(userid) + "," + str(itemid) + "," + str(rating) + ");")
-    cur.close()
-    con.commit()
+    try:
+        con = openconnection
+        if con is None:
+            raise ValueError("Database connection cannot be None.")
+
+        if con.closed:
+            raise ConnectionError("Database connection is closed.")
+
+        cur = con.cursor()
+
+        main_insert_sql = SQL("INSERT INTO {} (userid, movieid, rating) VALUES (%s, %s, %s);").format(
+            Identifier(ratingstablename)
+        )
+        cur.execute(main_insert_sql, (userid, itemid, rating))
+
+        cur.execute(SQL("SELECT COUNT(*) FROM {};").format(Identifier(ratingstablename)))
+        total_rows = cur.fetchone()[0]
+
+        numberofpartitions = count_partitions(RROBIN_TABLE_PREFIX, con)
+
+        if numberofpartitions <= 0:
+            raise ValueError(f"Error: No partitions found with prefix '{RROBIN_TABLE_PREFIX}' or invalid count ({numberofpartitions}). Cannot insert.")
+
+        index = (total_rows - 1) % numberofpartitions
+        partition_table_name = RROBIN_TABLE_PREFIX + str(index)
+
+        partition_insert_sql = SQL("INSERT INTO {} (userid, movieid, rating) VALUES (%s, %s, %s);").format(
+            Identifier(partition_table_name)
+        )
+        cur.execute(partition_insert_sql, (userid, itemid, rating))
+
+        con.commit()
+
+    except (ValueError, ConnectionError) as ve:
+        if con and not con.closed:
+            try:
+                con.rollback()
+            except Exception as rb_e:
+                print(rb_e)
+        raise 
+
+    except Exception as e:
+        if con and not con.closed:
+            try:
+                con.rollback()
+            except Exception as rb_e:
+                print(rb_e)
+        raise
+    finally:
+        if cur:
+            cur.close()
