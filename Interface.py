@@ -8,15 +8,11 @@ import multiprocessing
 load_dotenv()
 
 def getopenconnection(user='postgres', password='2324', dbname='postgres'):
-    '''
-    Connect to database 'dbname' through unix socket
-    '''
     return psycopg2.connect(
         dbname=dbname,
-        user=user, 
+        user=user,
         password=password,
-        host=os.getenv("HOST"),
-        port=os.getenv("PORT")
+        host='localhost'   
     )
 
 def create_db(dbname):
@@ -135,6 +131,7 @@ def roundrobinpartition(ratingstablename, numberofpartitions, openconnection):
     Function to create partitions of main table using round robin approach.
     Thay thế  mod(temp.rnum-1, 5) -> mod(temp.rnum - 1, numberofpartitions) để  khỏi mất mát dữ liệu trong quá trình phân mảnh khi numberofpartition khác 5 
     """
+    
     con = None 
     cur = None
     
@@ -149,6 +146,9 @@ def roundrobinpartition(ratingstablename, numberofpartitions, openconnection):
     try: 
         con = openconnection
         cur = con.cursor()
+        
+        save_rr_index(0)
+        
         RROBIN_TABLE_PREFIX = 'rrobin_part'
         
         cur.execute(temp_tb)
@@ -283,58 +283,43 @@ def rangeinsert(ratingstablename, userid, itemid, rating, openconnection):
             except Exception as e_close:
                 print(f"Error closing cursor: {e_close}")
 
-def roundrobininsert(ratingstablename, userid, itemid, rating, openconnection):
-    con = None
-    cur = None
-    RROBIN_TABLE_PREFIX = 'rrobin_part'
+def get_rr_index():
     try:
-        con = openconnection
-        if con is None:
-            raise ValueError("Database connection cannot be None.")
+        with open("rr_index.txt", 'r') as f:
+            return int(f.read())
+    except:
+        return 0
 
-        if con.closed:
-            raise ConnectionError("Database connection is closed.")
+def save_rr_index(index):
+    with open("rr_index.txt", 'w') as f:
+        f.write(str(index))
 
-        cur = con.cursor()
-
+def roundrobininsert(ratingstablename, userid, itemid, rating, openconnection):
+    con = openconnection
+    cur = con.cursor()
+    try:
+        # Bổ sung chèn hàng mới vào bảng chính 
         main_insert_sql = SQL("INSERT INTO {} (userid, movieid, rating) VALUES (%s, %s, %s);").format(
             Identifier(ratingstablename)
         )
         cur.execute(main_insert_sql, (userid, itemid, rating))
+        
+        cur.execute("SELECT COUNT(*) FROM information_schema.tables WHERE table_name LIKE 'rrobin_part%';")
+        numberofpartitions = cur.fetchone()[0]
 
-        cur.execute(SQL("SELECT COUNT(*) FROM {};").format(Identifier(ratingstablename)))
-        total_rows = cur.fetchone()[0]
+        current_index = get_rr_index()
+        target_partition = current_index % numberofpartitions
 
-        numberofpartitions = count_partitions(RROBIN_TABLE_PREFIX, con)
+        cur.execute(SQL("INSERT INTO {} (userid, movieid, rating) VALUES (%s, %s, %s)")
+                    .format(Identifier("rrobin_part" + str(target_partition))),
+                    (userid, itemid, rating))
 
-        if numberofpartitions <= 0:
-            raise ValueError(f"Error: No partitions found with prefix '{RROBIN_TABLE_PREFIX}' or invalid count ({numberofpartitions}). Cannot insert.")
-
-        index = (total_rows - 1) % numberofpartitions
-        partition_table_name = RROBIN_TABLE_PREFIX + str(index)
-
-        partition_insert_sql = SQL("INSERT INTO {} (userid, movieid, rating) VALUES (%s, %s, %s);").format(
-            Identifier(partition_table_name)
-        )
-        cur.execute(partition_insert_sql, (userid, itemid, rating))
+        save_rr_index(current_index + 1)
 
         con.commit()
-
-    except (ValueError, ConnectionError) as ve:
-        if con and not con.closed:
-            try:
-                con.rollback()
-            except Exception as rb_e:
-                print(rb_e)
-        raise 
-
     except Exception as e:
-        if con and not con.closed:
-            try:
-                con.rollback()
-            except Exception as rb_e:
-                print(rb_e)
+        con.rollback()
+        print("roundrobininsert failed:", e)
         raise
     finally:
-        if cur:
-            cur.close()
+        cur.close()
