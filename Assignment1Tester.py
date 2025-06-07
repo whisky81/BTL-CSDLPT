@@ -41,7 +41,7 @@ if __name__ == '__main__':
 
             # ALERT:: Use only one at a time i.e. uncomment only one line at a time and run the script
             [result, e] = testHelper.testrangeinsert(MyAssignment, RATINGS_TABLE, 100, 2, 3, conn, '2')
-            # [result, e] = testHelper.testrangeinsert(MyAssignment, RATINGS_TABLE, 100, 2, 0, conn, '0')
+            [result, e] = testHelper.testrangeinsert(MyAssignment, RATINGS_TABLE, 100, 2, 0, conn, '0')
             if result:
                 print("rangeinsert function pass!")
             else:
