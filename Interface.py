@@ -12,7 +12,7 @@ def getopenconnection(user='postgres', password='2324', dbname='postgres'):
         dbname=dbname,
         user=user,
         password=password,
-        host='localhost'   
+        host=os.getenv("HOST")    
     )
 
 def create_db(dbname):
