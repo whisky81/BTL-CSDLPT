@@ -8,7 +8,7 @@ import multiprocessing
 
 
 
-def getopenconnection(user='postgres', password='1234', dbname='postgres'):
+def getopenconnection(user='postgres', password='2324', dbname='postgres'):
     '''
     Connect to database 'dbname' through unix socket
     '''
@@ -73,7 +73,7 @@ def loadratings(ratings_table_name, ratings_file_path, open_connection):
         conn.commit()
 
         # Load dữ liệu theo batch
-        batch_size = 150_000
+        batch_size = 100_000
         buffer = StringIO()
 
         with open(ratings_file_path, 'r') as file:
@@ -114,64 +114,39 @@ def loadratings(ratings_table_name, ratings_file_path, open_connection):
 
 
 def insert_partition(args):
-    ratings_table_name, i, delta, openconnection = args
-    conn = openconnection
+    '''
+    Helper func for rangepartition 
+    '''
+    i, delta, ratings_table_name = args
+    conn = getopenconnection(dbname=os.getenv("DATABASE_NAME"))
     cur = conn.cursor()
 
     minRange = i * delta
     maxRange = minRange + delta
     table_name = f"range_part{i}"
-
     if i == 0:
-        query = SQL("""
-            INSERT INTO {} 
-            SELECT userid, movieid, rating FROM {} 
-            WHERE rating >= %s AND rating <= %s
-        """).format(
-            Identifier(table_name),
-            Identifier(ratings_table_name)
-        )
+        query = f"INSERT INTO {table_name} SELECT userid, movieid, rating FROM {ratings_table_name} WHERE rating >= {minRange} AND rating <= {maxRange};"
     else:
-        query = SQL("""
-            INSERT INTO {} 
-            SELECT userid, movieid, rating FROM {} 
-            WHERE rating > %s AND rating <= %s
-        """).format(
-            Identifier(table_name),
-            Identifier(ratings_table_name)
-        )
+        query = f"INSERT INTO {table_name} SELECT userid, movieid, rating FROM {ratings_table_name} WHERE rating > {minRange} AND rating <= {maxRange};"
 
-    cur.execute(query, (minRange, maxRange))
+    cur.execute(query)
     conn.commit()
     cur.close()
-
+    conn.close()
 
 # 8.33s
-def rangepartition(ratingstablename, numberofpartitions, openconnection):
-    con = openconnection
-    cur = con.cursor()
+def rangepartition(ratings_table_name, number_of_partitions, open_connection):
+    cur = open_connection.cursor()
+    delta = 5 / number_of_partitions
+    for i in range(number_of_partitions):
+        table_name = f"range_part{i}"
+        cur.execute(f"CREATE TABLE {table_name} (userid INTEGER, movieid INTEGER, rating FLOAT);")
+    open_connection.commit()
+    cur.close()
 
-    try:
-        step = 5.0 / numberofpartitions
-
-        # Tạo bảng range_part{i}
-        for i in range(numberofpartitions):
-            table_name = f"range_part{i}"
-            cur.execute(SQL("DROP TABLE IF EXISTS {}").format(Identifier(table_name)))
-            cur.execute(SQL("CREATE TABLE {} (userid INT, movieid INT, rating FLOAT)").format(Identifier(table_name)))
-
-        con.commit()
-
-        # Thực hiện insert tuần tự
-        for i in range(numberofpartitions):
-            insert_partition((ratingstablename, i, step, con))
-
-    except Exception as e:
-        con.rollback()
-        print("rangepartition failed:", e)
-        raise
-    finally:
-        cur.close()
+    args = [(i, delta, ratings_table_name) for i in range(number_of_partitions)]
+    with multiprocessing.Pool() as pool:
+        pool.map(insert_partition, args)
 
 
 
