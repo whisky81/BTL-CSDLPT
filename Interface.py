@@ -8,14 +8,14 @@ import multiprocessing
 
 
 
-def getopenconnection(user='postgres', password='2324', dbname='postgres'):
+def getopenconnection(dbname='postgres'):
     '''
     Connect to database 'dbname' through unix socket
     '''
     return psycopg2.connect(
         dbname=dbname,
-        user=user, 
-        password=password,
+        user=os.getenv("USER"), 
+        password=os.getenv("PASSWORD"),
         host=os.getenv("HOST"),
         port=os.getenv("PORT")
     )
@@ -73,7 +73,7 @@ def loadratings(ratings_table_name, ratings_file_path, open_connection):
         conn.commit()
 
         # Load dữ liệu theo batch
-        batch_size = 100_000
+        batch_size = 200_000
         buffer = StringIO()
 
         with open(ratings_file_path, 'r') as file:
@@ -110,7 +110,15 @@ def loadratings(ratings_table_name, ratings_file_path, open_connection):
 
     finally:
         if cur:
-            cur.close()
+            cur.close() 
+# def loadratings(ratingstablename, ratingsfilepath, openconnection):
+#     con = openconnection
+#     cur = con.cursor()
+#     cur.execute("create table " + ratingstablename + "(userid integer, extra1 char, movieid integer, extra2 char, rating float, extra3 char, timestamp bigint);")
+#     cur.copy_from(open(ratingsfilepath),ratingstablename,sep=':')
+#     cur.execute("alter table " + ratingstablename + " drop column extra1, drop column extra2, drop column extra3, drop column timestamp;")
+#     cur.close()
+#     con.commit()
 
 
 def insert_partition(args):

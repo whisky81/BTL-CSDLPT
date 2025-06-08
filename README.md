@@ -15,6 +15,14 @@
 
 3. Tải file ratings.dat 
 
+4. Cấu hình .env
+   ```bash
+   HOST=localhost
+   PORT=5432
+   DATABASE_NAME=your_database_name
+   USER=your_username
+   PASSWORD=your_password
+   ```
 
 - Nếu gặp lỗi PostgreSQL: 
 [Xử lý lỗi peer authentication cho postgresql](https://stackoverflow.com/questions/18664074/getting-error-peer-authentication-failed-for-user-postgres-when-trying-to-ge)

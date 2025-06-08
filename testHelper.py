@@ -1,5 +1,6 @@
 import traceback
 import psycopg2
+import os
 
 RANGE_TABLE_PREFIX = 'range_part'
 RROBIN_TABLE_PREFIX = 'rrobin_part'
@@ -51,13 +52,13 @@ def deleteAllPublicTables(openconnection):
 
     cur.close()
 
-def getopenconnection(user='postgres', password='2324', dbname='postgres'):
-    # return psycopg2.connect("dbname='" + dbname + "' user='" + user + "' host='localhost' password='" + password + "'")
+def getopenconnection(dbname='postgres'):
     return psycopg2.connect(
         dbname=dbname,
-        user=user,
-        password=password,
-        host="/var/run/postgresql"    
+        user=os.getenv("USER"),
+        password=os.getenv("PASSWORD"),
+        host=os.getenv("HOST"),
+        port=os.getenv("PORT")       
     )
 
 
