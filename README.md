@@ -23,6 +23,7 @@
    USER=your_username
    PASSWORD=your_password
    ```
-
+   DATABASE_NAME: là tên của database lưu trữ bảng ratings và các phân mảnh của nó. 
+   Ví dụ: dds_assgn1
 - Nếu gặp lỗi PostgreSQL: 
 [Xử lý lỗi peer authentication cho postgresql](https://stackoverflow.com/questions/18664074/getting-error-peer-authentication-failed-for-user-postgres-when-trying-to-ge)
