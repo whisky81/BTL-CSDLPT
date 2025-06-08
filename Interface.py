@@ -274,6 +274,9 @@ def roundrobininsert(ratingstablename, userid, itemid, rating, openconnection):
 
         current_index = get_rr_index()
         target_partition = current_index % numberofpartitions
+        
+        insert_sql = SQL("INSERT INTO {} (userid, movieid, rating) VALUES (%s, %s, %s);")
+        cur.execute(insert_sql.format(Identifier(ratingstablename)), (userid, itemid, rating))
 
         cur.execute(SQL("INSERT INTO {} (userid, movieid, rating) VALUES (%s, %s, %s)")
                     .format(Identifier("rrobin_part" + str(target_partition))),
